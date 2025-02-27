@@ -12,14 +12,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Copy, Share2 } from "lucide-react"
 import { toast } from "@/components/ui/use-toast"
 import { Toaster } from "@/components/ui/toaster"
-
-interface Message {
-  id: string
-  sender: string
-  content: string
-  timestamp: string
-  encrypted: boolean
-}
+import { addMessage, getMessages, type Message } from "@/app/actions"
 
 export default function ChatRoom({ params }: { params: { roomId: string } }) {
   const router = useRouter()
@@ -31,14 +24,23 @@ export default function ChatRoom({ params }: { params: { roomId: string } }) {
   const [message, setMessage] = useState("")
   const [messages, setMessages] = useState<Message[]>([])
   const [isDecrypting, setIsDecrypting] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
 
-  // Load messages from localStorage
+  // Load messages from server
   useEffect(() => {
-    const roomData = localStorage.getItem(`room_${params.roomId}`)
-    if (roomData) {
-      const { messages: storedMessages } = JSON.parse(roomData)
-      setMessages(storedMessages || [])
+    async function loadMessages() {
+      try {
+        setIsLoading(true)
+        const serverMessages = await getMessages(params.roomId)
+        setMessages(serverMessages)
+      } catch (error) {
+        console.error("Error loading messages:", error)
+      } finally {
+        setIsLoading(false)
+      }
     }
+
+    loadMessages()
 
     // Check if username is already set in this session
     const storedUsername = sessionStorage.getItem(`username_${params.roomId}`)
@@ -47,19 +49,15 @@ export default function ChatRoom({ params }: { params: { roomId: string } }) {
       setUsernameSet(true)
     }
 
-    // Set up polling to check for new messages
-    const interval = setInterval(() => {
-      const freshRoomData = localStorage.getItem(`room_${params.roomId}`)
-      if (freshRoomData) {
-        const { messages: freshMessages } = JSON.parse(freshRoomData)
-        setMessages((prevMessages) => {
-          if (JSON.stringify(prevMessages) !== JSON.stringify(freshMessages)) {
-            return freshMessages || []
-          }
-          return prevMessages
-        })
+    // Set up polling to check for new messages every 3 seconds
+    const interval = setInterval(async () => {
+      try {
+        const freshMessages = await getMessages(params.roomId)
+        setMessages(freshMessages)
+      } catch (error) {
+        console.error("Error polling messages:", error)
       }
-    }, 1000)
+    }, 3000)
 
     return () => clearInterval(interval)
   }, [params.roomId])
@@ -77,31 +75,21 @@ export default function ChatRoom({ params }: { params: { roomId: string } }) {
       // Encrypt the message
       const encryptedContent = await encryptMessage(message, privateKey)
 
-      // Create a new message object
-      const newMessage: Message = {
-        id: Date.now().toString(),
-        sender: username,
-        content: encryptedContent,
-        timestamp: new Date().toISOString(),
-        encrypted: true,
-      }
-
-      // Update messages in state and localStorage
-      const updatedMessages = [...messages, newMessage]
-      setMessages(updatedMessages)
-
-      // Save to localStorage
-      const roomData = localStorage.getItem(`room_${params.roomId}`)
-      if (roomData) {
-        const parsedData = JSON.parse(roomData)
-        parsedData.messages = updatedMessages
-        localStorage.setItem(`room_${params.roomId}`, JSON.stringify(parsedData))
-      }
+      // Send the message to the server
+      await addMessage(params.roomId, username, encryptedContent, true)
 
       // Clear the input
       setMessage("")
+
+      // Immediately fetch messages to update the UI
+      const updatedMessages = await getMessages(params.roomId)
+      setMessages(updatedMessages)
     } catch (error) {
       console.error("Error sending message:", error)
+      toast({
+        title: "Error",
+        description: "Failed to send message. Please try again.",
+      })
     }
   }
 
@@ -144,6 +132,15 @@ export default function ChatRoom({ params }: { params: { roomId: string } }) {
     })
   }
 
+  const copyKeyShareLink = () => {
+    const url = `${window.location.origin}/chat/${params.roomId}?key=${encodeURIComponent(privateKey)}`
+    navigator.clipboard.writeText(url)
+    toast({
+      title: "Link with key copied!",
+      description: "This link includes the private key. Only share with trusted people.",
+    })
+  }
+
   // If username is not set, show the username form
   if (!usernameSet) {
     return (
@@ -164,6 +161,13 @@ export default function ChatRoom({ params }: { params: { roomId: string } }) {
                 className="flex-1"
               />
             </div>
+            {privateKey ? (
+              <div className="text-sm text-green-600">Private key detected. You'll be able to decrypt messages.</div>
+            ) : (
+              <div className="text-sm text-amber-600">
+                No private key detected. You'll need the key to decrypt messages.
+              </div>
+            )}
           </CardContent>
           <CardFooter>
             <Button className="w-full" onClick={setUserUsername} disabled={!username.trim()}>
@@ -187,19 +191,25 @@ export default function ChatRoom({ params }: { params: { roomId: string } }) {
             <div className="flex space-x-2">
               <Button variant="outline" size="sm" onClick={copyShareLink} className="flex items-center gap-1">
                 <Share2 className="h-4 w-4" />
-                Share
+                Share Room
               </Button>
               {privateKey && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={decryptMessages}
-                  disabled={isDecrypting}
-                  className="flex items-center gap-1"
-                >
-                  <Copy className="h-4 w-4" />
-                  Key: {privateKey.substring(0, 4)}...
-                </Button>
+                <>
+                  <Button variant="outline" size="sm" onClick={copyKeyShareLink} className="flex items-center gap-1">
+                    <Share2 className="h-4 w-4" />
+                    Share with Key
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={decryptMessages}
+                    disabled={isDecrypting}
+                    className="flex items-center gap-1"
+                  >
+                    <Copy className="h-4 w-4" />
+                    Key: {privateKey.substring(0, 4)}...
+                  </Button>
+                </>
               )}
             </div>
           </div>
@@ -207,7 +217,11 @@ export default function ChatRoom({ params }: { params: { roomId: string } }) {
 
         <CardContent className="flex-1 overflow-hidden p-4">
           <ScrollArea className="h-full pr-4">
-            {messages.length === 0 ? (
+            {isLoading ? (
+              <div className="flex h-full items-center justify-center">
+                <p className="text-center text-muted-foreground">Loading messages...</p>
+              </div>
+            ) : messages.length === 0 ? (
               <div className="flex h-full items-center justify-center">
                 <p className="text-center text-muted-foreground">No messages yet. Start the conversation!</p>
               </div>

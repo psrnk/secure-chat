@@ -7,11 +7,13 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { generateRandomString } from "@/lib/utils"
+import { createRoom } from "@/app/actions"
 
 export default function CreatePage() {
   const router = useRouter()
   const [privateKey, setPrivateKey] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isCreating, setIsCreating] = useState(false)
 
   const generateKey = () => {
     setIsGenerating(true)
@@ -21,23 +23,24 @@ export default function CreatePage() {
     setIsGenerating(false)
   }
 
-  const createChat = () => {
+  const createChat = async () => {
     if (!privateKey) return
 
-    // Create a unique room ID
-    const roomId = generateRandomString(10)
+    setIsCreating(true)
 
-    // Store the room ID in localStorage
-    localStorage.setItem(
-      `room_${roomId}`,
-      JSON.stringify({
-        created: new Date().toISOString(),
-        messages: [],
-      }),
-    )
+    try {
+      // Create a unique room ID
+      const roomId = generateRandomString(10)
 
-    // Navigate to the chat room
-    router.push(`/chat/${roomId}?key=${encodeURIComponent(privateKey)}`)
+      // Create the room on the server
+      await createRoom(roomId)
+
+      // Navigate to the chat room
+      router.push(`/chat/${roomId}?key=${encodeURIComponent(privateKey)}`)
+    } catch (error) {
+      console.error("Error creating chat room:", error)
+      setIsCreating(false)
+    }
   }
 
   return (
@@ -68,8 +71,8 @@ export default function CreatePage() {
           </div>
         </CardContent>
         <CardFooter>
-          <Button className="w-full" onClick={createChat} disabled={!privateKey}>
-            Create Chat Room
+          <Button className="w-full" onClick={createChat} disabled={!privateKey || isCreating}>
+            {isCreating ? "Creating..." : "Create Chat Room"}
           </Button>
         </CardFooter>
       </Card>
